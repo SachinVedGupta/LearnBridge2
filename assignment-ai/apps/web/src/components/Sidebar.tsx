@@ -1,6 +1,16 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
+import {
+  AcademicCapIcon,
+  ChartBarSquareIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  SquaresPlusIcon,
+} from '@heroicons/react/24/outline';
+import { PaperAirplaneIcon } from '@heroicons/react/24/solid';
 import { askAPI, editAPI } from '@/lib/api';
 import type { Editor } from '@tiptap/react';
 import { mapSuggestionsToAbsolute } from '@/extensions/InlineSuggestions';
@@ -8,6 +18,8 @@ import type { MappedSuggestion } from '@assignment-ai/shared';
 import { templates } from '@/lib/templates';
 import { analyzeText, type WritingStats } from '@/lib/analytics';
 import Analytics from './Analytics';
+
+export type Mode = 'ask' | 'agent';
 
 interface SidebarProps {
   response: string | null;
@@ -17,22 +29,32 @@ interface SidebarProps {
   onLoadingChange: (loading: boolean) => void;
   courseCtx: string;
   onCourseCtxChange: (text: string) => void;
+  mode: Mode;
+  onModeChange: (mode: Mode) => void;
 }
 
-type Mode = 'ask' | 'agent';
-
-export default function Sidebar({ response, loading, editor, onAskResponse, onLoadingChange, courseCtx, onCourseCtxChange }: SidebarProps) {
+export default function Sidebar({
+  response,
+  loading,
+  editor,
+  onAskResponse,
+  onLoadingChange,
+  courseCtx,
+  onCourseCtxChange,
+  mode,
+  onModeChange,
+}: SidebarProps) {
   const [instructions, setInstructions] = useState('');
-  const [mode, setMode] = useState<Mode>('ask');
   const [error, setError] = useState<string | null>(null);
   const [showCourseCtx, setShowCourseCtx] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
-  const [showAnalytics, setShowAnalytics] = useState(true);
+  const [showAnalytics, setShowAnalytics] = useState(false);
   const [agentSuggestions, setAgentSuggestions] = useState<MappedSuggestion[]>([]);
   const [confirmModal, setConfirmModal] = useState<{ show: boolean; templateId: string | null }>({
     show: false,
     templateId: null,
   });
+  const [savedSelection, setSavedSelection] = useState<{ from: number; to: number } | null>(null);
   const [stats, setStats] = useState<WritingStats>({
     wordCount: 0,
     charCount: 0,
@@ -45,6 +67,62 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
     readabilityLevel: 'N/A',
     vocabularyDiversity: 0,
   });
+
+  const modeOptions: Array<{ id: Mode; label: string }> = [
+    { id: 'ask', label: 'Ask' },
+    { id: 'agent', label: 'Agent' },
+  ];
+
+  const summaryMetrics = [
+    {
+      label: 'Words',
+      value: stats.wordCount.toLocaleString(),
+    },
+    {
+      label: 'Reading Time',
+      value:
+        stats.wordCount === 0
+          ? '—'
+          : `${Math.max(1, Math.round(stats.readingTimeMinutes || 0))} min`,
+    },
+    {
+      label: 'Readability',
+      value: stats.readabilityLevel,
+    },
+  ];
+
+  const toggleButtonClasses = (active: boolean, accent: 'blue' | 'indigo' = 'blue') => {
+    const activeAccent =
+      accent === 'indigo'
+        ? 'border-indigo-500/60 bg-indigo-500/10 text-indigo-100 shadow-[0_0_0_1px_rgba(129,140,248,0.25)] focus:ring-indigo-500/30'
+        : 'border-blue-500/60 bg-blue-500/10 text-blue-100 shadow-[0_0_0_1px_rgba(59,130,246,0.25)] focus:ring-blue-500/30';
+    const inactiveAccent = accent === 'indigo' ? 'focus:ring-indigo-500/30' : 'focus:ring-blue-500/30';
+
+    return [
+      'flex w-full items-center justify-between rounded-xl border px-4 py-3 text-sm font-medium transition-all focus:outline-none focus:ring-2 focus:ring-offset-0',
+      active
+        ? activeAccent
+        : `border-gray-800 bg-gray-900/80 text-gray-300 hover:border-gray-600 hover:bg-gray-800/80 ${inactiveAccent}`,
+    ].join(' ');
+  };
+
+  const toggleTemplatesPanel = () => {
+    if (showTemplates) {
+      setShowTemplates(false);
+    } else {
+      setShowTemplates(true);
+      setShowCourseCtx(false);
+    }
+  };
+
+  const toggleCourseCtxPanel = () => {
+    if (showCourseCtx) {
+      setShowCourseCtx(false);
+    } else {
+      setShowCourseCtx(true);
+      setShowTemplates(false);
+    }
+  };
 
   const updateLoading = (isLoading: boolean) => {
     onLoadingChange(isLoading);
@@ -87,6 +165,8 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
 
     updateLoading(true);
     setError(null);
+    setAgentSuggestions([]); // Clear any agent suggestions
+    onAskResponse(''); // Clear old response
 
     try {
       const docText = editor.getText();
@@ -109,17 +189,39 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
       setError('Please enter brief instructions for suggestions');
       return;
     }
-    const { from, to } = editor.state.selection;
-    if (from === to) {
-      setError('Please select text to receive inline suggestions');
-      return;
+
+    // Use saved selection, current selection, or entire document
+    let from: number;
+    let to: number;
+    
+    if (savedSelection) {
+      // Use the selection saved before focus was lost
+      from = savedSelection.from;
+      to = savedSelection.to;
+    } else {
+      // Check current selection
+      const selection = editor.state.selection;
+      from = selection.from;
+      to = selection.to;
+      
+      // If nothing selected, use entire document
+      if (from === to) {
+        from = 0;
+        to = editor.state.doc.content.size;
+      }
     }
 
     updateLoading(true);
     setError(null);
+    setAgentSuggestions([]); // Clear old suggestions
+    onAskResponse(''); // Clear old response text
 
     try {
-      const selectedText = from !== to ? editor.state.doc.textBetween(from, to, ' ') : '';
+      const selectedText = editor.state.doc.textBetween(from, to, '\n');
+      
+      console.log('[Sidebar] Selection range:', { from, to });
+      console.log('[Sidebar] Selected text length:', selectedText.length);
+      console.log('[Sidebar] Selected text preview:', selectedText.substring(0, 200));
       
       const result = await editAPI({
         docSlice: selectedText,
@@ -128,22 +230,41 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
         courseCtx: courseCtx || undefined,
       });
 
+      console.log('[Sidebar] Full API response:', result);
+
       // Map suggestion ranges (relative to selection) to absolute positions
       if (Array.isArray(result.suggestions) && result.suggestions.length > 0) {
         console.log('[Sidebar] Received suggestions:', result.suggestions);
+        console.log('[Sidebar] First suggestion detail:', {
+          id: result.suggestions[0].id,
+          range: result.suggestions[0].range,
+          original: result.suggestions[0].original,
+          replacement: result.suggestions[0].replacement
+        });
         const mapped = mapSuggestionsToAbsolute(result.suggestions, from, editor);
         console.log('[Sidebar] Mapped suggestions:', mapped);
+        console.log('[Sidebar] First mapped suggestion:', mapped[0]);
         editor.commands.setSuggestions(mapped, from);
         setAgentSuggestions(mapped);
+        
+        // Show summary of changes
+        if (result.summary) {
+          onAskResponse(`✨ ${result.summary}\n\nClick on the highlighted suggestions in the editor to review and apply them.`);
+        } else {
+          onAskResponse(`✨ Generated ${mapped.length} suggestion${mapped.length !== 1 ? 's' : ''}.\n\nClick on the highlighted suggestions in the editor to review and apply them.`);
+        }
       } else {
         console.log('[Sidebar] No suggestions returned');
+        onAskResponse('No suggestions were generated. Try being more specific with your instructions.');
       }
-
-      if (result.summary) {
-        onAskResponse(result.summary);
-      }
+      
+      // Clear saved selection after use
+      setSavedSelection(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate content');
+      console.error('[Sidebar] Error:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to generate content';
+      setError(errorMessage);
+      onAskResponse(`❌ Error: ${errorMessage}\n\nPlease check the API server logs for details.`);
     } finally {
       updateLoading(false);
     }
@@ -194,6 +315,16 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
     }
   };
 
+  const handleInputFocus = () => {
+    // Save current selection when user focuses on input in Agent mode
+    if (editor && mode === 'agent') {
+      const { from, to } = editor.state.selection;
+      if (from !== to) {
+        setSavedSelection({ from, to });
+      }
+    }
+  };
+
   const handleTemplateSelect = (templateId: string) => {
     if (!editor) return;
 
@@ -231,25 +362,55 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
     setConfirmModal({ show: false, templateId: null });
   };
 
+  const templatesButtonRef = useRef<HTMLButtonElement | null>(null);
+  const contextButtonRef = useRef<HTMLButtonElement | null>(null);
+
   return (
-    <div className="flex flex-col h-full bg-gray-900 border border-gray-700 rounded-lg overflow-hidden shadow-xl">
+    <div className="flex h-full min-h-0 flex-col overflow-visible rounded-2xl border border-gray-800/70 bg-gray-900/85 shadow-[0_18px_45px_rgba(10,14,32,0.6)]">
       {/* Header */}
-      <div className="bg-gray-800 border-b border-gray-700 px-4 py-3">
-        <h2 className="text-base font-semibold text-gray-100 flex items-center gap-2">
+      <div className="border-b border-gray-800/70 bg-gray-900/80 px-4 py-3">
+        <h2 className="flex items-center gap-2 text-base font-semibold text-gray-100">
           <span className="text-xl">🤖</span>
           AI Assistant
         </h2>
       </div>
       
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 min-h-0 space-y-4 overflow-y-auto p-4">
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+          {summaryMetrics.map((metric) => (
+            <div
+              key={metric.label}
+              className="rounded-2xl border border-gray-800 bg-gray-950/60 px-3 py-3 text-center shadow-inner shadow-black/20"
+            >
+              <p className="text-xs uppercase tracking-wide text-gray-500">{metric.label}</p>
+              <p className="mt-1 text-lg font-semibold text-gray-100">{metric.value}</p>
+            </div>
+          ))}
+        </div>
+
         {/* Analytics Section */}
-        <div>
+        <div className="space-y-3">
           <button
             onClick={() => setShowAnalytics(!showAnalytics)}
-            className="text-xs text-gray-400 hover:text-gray-300 underline mb-2"
+            className={toggleButtonClasses(showAnalytics)}
           >
-            {showAnalytics ? '− Hide' : '📊 Show'} Writing Stats
+            <span className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10 text-blue-300">
+                <ChartBarSquareIcon className="h-5 w-5" />
+              </span>
+              <span className="flex flex-col items-start">
+                <span>Writing Stats</span>
+                <span className="text-xs font-normal text-gray-400">
+                  {showAnalytics ? 'Hide analytics panel' : 'View live progress'}
+                </span>
+              </span>
+            </span>
+            {showAnalytics ? (
+              <ChevronUpIcon className="h-5 w-5 text-blue-300" />
+            ) : (
+              <ChevronDownIcon className="h-5 w-5 text-gray-500" />
+            )}
           </button>
           {showAnalytics && <Analytics stats={stats} />}
         </div>
@@ -333,122 +494,131 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
       </div>
 
       {/* Chat Input Area */}
-      <div className="border-t border-gray-700 bg-gray-800 p-4">
-        {/* Templates Section */}
-        <div className="mb-2">
-          <button
-            onClick={() => setShowTemplates(!showTemplates)}
-            className="text-xs text-gray-400 hover:text-gray-300 underline"
-          >
-            {showTemplates ? '− Hide' : '📝 Use'} Templates
-          </button>
-        </div>
-
-        {/* Templates Dropdown */}
-        {showTemplates && (
-          <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3">
-            <p className="text-xs text-gray-400 mb-2">Choose a template to get started:</p>
-            <div className="grid grid-cols-1 gap-2">
-              {templates.map((template) => (
-                <button
-                  key={template.id}
-                  onClick={() => handleTemplateSelect(template.id)}
-                  disabled={loading}
-                  className="text-left px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-lg text-sm text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">{template.icon}</span>
-                    <div className="flex-1">
-                      <div className="font-medium">{template.name}</div>
-                      <div className="text-xs text-gray-400">{template.description}</div>
-                    </div>
+      <div className="mt-auto border-t border-gray-700/80 bg-gray-800/95 p-4">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-gray-800 bg-gray-900/80 p-3 shadow-inner shadow-black/20">
+            <div className="flex flex-col gap-4">
+              <div className="overflow-x-auto pb-1">
+                <div className="flex min-w-max items-center gap-2">
+                  <div className="inline-flex flex-none items-center gap-1 rounded-full border border-gray-800 bg-gray-950/60 p-1 shadow-inner shadow-black/30">
+                    {modeOptions.map((option) => {
+                      const isActive = option.id === mode;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => onModeChange(option.id)}
+                          disabled={loading}
+                          className={[
+                            'rounded-full px-4 py-[6px] text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-60',
+                            isActive
+                              ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/30'
+                              : 'text-gray-400 hover:text-gray-200',
+                          ].join(' ')}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
                   </div>
+
+                  <div className="relative flex-none">
+                    <button
+                      type="button"
+                      onClick={toggleTemplatesPanel}
+                      ref={templatesButtonRef}
+                      className="flex flex-none items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2 text-sm font-medium text-gray-200 shadow-inner shadow-black/20 transition hover:border-blue-500/50 hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/10 text-blue-300">
+                        <SquaresPlusIcon className="h-4 w-4" />
+                      </span>
+                      <span>Templates</span>
+                      {showTemplates ? (
+                        <ChevronUpIcon className="h-4 w-4 text-blue-300" />
+                      ) : (
+                        <ChevronDownIcon className="h-4 w-4 text-gray-500" />
+                      )}
+                    </button>
+
+                    {showTemplates && (
+                      <TemplatesMenu
+                        anchorRef={templatesButtonRef}
+                        loading={loading}
+                        onSelect={handleTemplateSelect}
+                      />
+                    )}
+                  </div>
+
+                  <div className="relative flex-none">
+                    <button
+                      type="button"
+                      onClick={toggleCourseCtxPanel}
+                      ref={contextButtonRef}
+                      className="flex flex-none items-center gap-2 rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2 text-sm font-medium text-gray-200 shadow-inner shadow-black/20 transition hover:border-indigo-500/50 hover:bg-indigo-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-300">
+                        <AcademicCapIcon className="h-4 w-4" />
+                      </span>
+                      <span>Context</span>
+                      {showCourseCtx ? (
+                        <ChevronUpIcon className="h-4 w-4 text-indigo-300" />
+                      ) : (
+                        <ChevronDownIcon className="h-4 w-4 text-gray-500" />
+                      )}
+                    </button>
+
+                    {showCourseCtx && (
+                      <CourseContextMenu
+                        anchorRef={contextButtonRef}
+                        loading={loading}
+                        courseCtx={courseCtx}
+                        onCourseCtxChange={onCourseCtxChange}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                <input
+                  type="text"
+                  value={instructions}
+                  onChange={(e) => setInstructions(e.target.value)}
+                  onKeyDown={handleKeyPress}
+                  onFocus={handleInputFocus}
+                  placeholder={mode === 'ask' ? 'Ask the assistant…' : 'Describe the changes you need…'}
+                  className="flex-1 rounded-xl border border-transparent bg-gray-950/40 px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-blue-500/50 focus:outline-none focus:ring-2 focus:ring-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={loading}
+                />
+
+                <button
+                  onClick={handleSubmit}
+                  disabled={loading || !editor || !instructions.trim()}
+                  className="flex items-center justify-center rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition-all hover:from-blue-500 hover:to-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loading ? (
+                    <svg className="h-5 w-5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  ) : (
+                    <PaperAirplaneIcon className="h-5 w-5 -rotate-6" />
+                  )}
                 </button>
-              ))}
+              </div>
+
+              {error && (
+                <div className="rounded-xl border border-red-500/60 bg-red-500/10 px-4 py-3 text-sm text-red-200 shadow-inner shadow-red-900/20">
+                  {error}
+                </div>
+              )}
             </div>
           </div>
-        )}
 
-        {/* Course Context Toggle */}
-        <div className="mb-2">
-          <button
-            onClick={() => setShowCourseCtx(!showCourseCtx)}
-            className="text-xs text-gray-400 hover:text-gray-300 underline"
-          >
-            {showCourseCtx ? '− Hide' : '+ Add'} Course Context
-          </button>
-        </div>
-
-        {/* Course Context */}
-        {showCourseCtx && (
-          <div className="mb-3 bg-gray-900 border border-gray-700 rounded-lg p-3">
-            <textarea
-              value={courseCtx}
-              onChange={(e) => onCourseCtxChange(e.target.value)}
-              placeholder="Paste rubric or course guidelines..."
-              className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 text-sm text-gray-200 placeholder-gray-500 focus:ring-2 focus:ring-blue-600 focus:border-transparent resize-none"
-              rows={3}
-              disabled={loading}
-            />
+          <div className="text-xs text-gray-500">
+            {mode === 'ask' && 'Tip: Ask for feedback, clarity, or next steps on your assignment.'}
+            {mode === 'agent' && 'Tip: Select text or leave blank to rewrite the entire document.'}
           </div>
-        )}
-
-        {/* Error Display */}
-        {error && (
-          <div className="mb-3 bg-red-900/50 border border-red-700 text-red-300 px-3 py-2 rounded-lg text-sm">
-            {error}
-          </div>
-        )}
-
-        {/* Input Box */}
-        <div className="bg-gray-700 border border-gray-600 rounded-2xl overflow-hidden">
-          <div className="flex items-center p-2 gap-2">
-            {/* Mode Dropdown */}
-            <select
-              value={mode}
-              onChange={(e) => setMode(e.target.value as Mode)}
-              disabled={loading}
-              className="px-3 py-2 text-sm font-medium bg-gray-800 text-gray-200 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-600 focus:border-transparent disabled:opacity-50 cursor-pointer"
-            >
-              <option value="ask">💡 Ask</option>
-              <option value="agent">✨ Agent</option>
-            </select>
-
-            {/* Input Field */}
-            <input
-              type="text"
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              onKeyDown={handleKeyPress}
-              placeholder={mode === 'ask' ? "Ask me anything..." : "Ask me to generate content..."}
-              className="flex-1 px-3 py-2 text-sm bg-transparent text-gray-200 placeholder-gray-500 border-0 focus:outline-none focus:ring-0"
-              disabled={loading}
-            />
-
-            {/* Send Button */}
-            <button
-              onClick={handleSubmit}
-              disabled={loading || !editor || !instructions.trim()}
-              className="flex-shrink-0 bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? (
-                <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-              ) : (
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                </svg>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Mode hint */}
-        <div className="mt-2 text-xs text-gray-500">
-          {mode === 'ask' && '💡 Get tutoring guidance'}
-          {mode === 'agent' && '✨ I will generate content based on your instructions'}
         </div>
       </div>
 
@@ -495,3 +665,213 @@ export default function Sidebar({ response, loading, editor, onAskResponse, onLo
   );
 }
 
+const MENU_WIDTH = 288; // tailwind w-72
+const MENU_OFFSET = 12;
+const DEFAULT_MENU_HEIGHT = 320;
+
+interface AnchorPosition {
+  top: number;
+  left: number;
+  placement: 'top' | 'bottom';
+}
+
+function useAnchorPosition<T extends HTMLElement>(
+  anchorRef: RefObject<T>,
+  isOpen: boolean,
+  menuHeight: number,
+  offset = MENU_OFFSET,
+) {
+  const [position, setPosition] = useState<AnchorPosition | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPosition(null);
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const updatePosition = () => {
+      const anchorEl = anchorRef.current;
+      if (!anchorEl) return;
+
+      const rect = anchorEl.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      const estimatedHeight = menuHeight || DEFAULT_MENU_HEIGHT;
+      const heightForPlacement = menuHeight || estimatedHeight;
+
+      const spaceBelow = viewportHeight - rect.bottom;
+      const spaceAbove = rect.top;
+
+      const canOpenBelow = spaceBelow >= heightForPlacement + offset;
+      const canOpenAbove = spaceAbove >= heightForPlacement + offset;
+
+      let placement: 'top' | 'bottom' = 'bottom';
+
+      if (!canOpenBelow && (canOpenAbove || spaceAbove > spaceBelow)) {
+        placement = 'top';
+      }
+
+      const maxLeft = Math.max(8, viewportWidth - MENU_WIDTH - 16);
+      const clampedLeft = Math.min(Math.max(8, rect.left), maxLeft);
+
+      const baseTop = rect.bottom + offset;
+      const bottomTop = Math.min(
+        Math.max(8, baseTop),
+        Math.max(8, viewportHeight - heightForPlacement - 8),
+      );
+      const topTop = Math.max(8, rect.top - heightForPlacement - offset);
+
+      const finalTop = placement === 'top' ? topTop : bottomTop;
+
+      setPosition({
+        top: finalTop,
+        left: clampedLeft,
+        placement,
+      });
+    };
+
+    updatePosition();
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [anchorRef, isOpen, menuHeight, offset]);
+
+  return position;
+}
+
+function useMenuHeight<T extends HTMLElement>() {
+  const menuRef = useRef<T | null>(null);
+  const [height, setHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el || typeof window === 'undefined') {
+      return;
+    }
+
+    const updateHeight = () => {
+      if (!menuRef.current) return;
+      setHeight(menuRef.current.offsetHeight);
+    };
+
+    updateHeight();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => updateHeight());
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, []);
+
+  return { menuRef, height };
+}
+
+interface TemplatesMenuProps {
+  anchorRef: RefObject<HTMLButtonElement>;
+  loading: boolean;
+  onSelect: (templateId: string) => void;
+}
+
+function TemplatesMenu({ anchorRef, loading, onSelect }: TemplatesMenuProps) {
+  const { menuRef, height } = useMenuHeight<HTMLDivElement>();
+  const position = useAnchorPosition(anchorRef, true, height);
+
+  if (typeof document === 'undefined' || !anchorRef.current) {
+    return null;
+  }
+
+  const portalStyle = position
+    ? { top: position.top, left: position.left }
+    : { visibility: 'hidden', pointerEvents: 'none', top: 0, left: 0 };
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="fixed z-[9999] w-72 rounded-2xl border border-gray-800 bg-gray-950/95 p-3 shadow-2xl shadow-black/40 backdrop-blur"
+      data-placement={position?.placement ?? 'bottom'}
+      style={portalStyle}
+    >
+      <p className="text-xs uppercase tracking-wide text-gray-400">Choose a template</p>
+      <div className="mt-2 max-h-60 space-y-2 overflow-y-auto pr-1">
+        {templates.map((template) => {
+          const TemplateIcon = template.icon;
+          return (
+            <button
+              key={template.id}
+              type="button"
+              onClick={() => onSelect(template.id)}
+              disabled={loading}
+              className="group flex w-full items-center gap-3 rounded-xl border border-gray-800 bg-gray-900/80 px-3 py-2 text-left text-sm text-gray-200 transition hover:-translate-y-0.5 hover:border-blue-500/50 hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10 text-blue-300 transition group-hover:bg-blue-500/20 group-hover:text-blue-200">
+                <TemplateIcon className="h-5 w-5" />
+              </span>
+              <span className="flex-1">
+                <span className="block text-sm font-semibold text-gray-100">{template.name}</span>
+                <span className="block text-xs text-gray-400">{template.description}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+interface CourseContextMenuProps {
+  anchorRef: RefObject<HTMLButtonElement>;
+  loading: boolean;
+  courseCtx: string;
+  onCourseCtxChange: (value: string) => void;
+}
+
+function CourseContextMenu({
+  anchorRef,
+  loading,
+  courseCtx,
+  onCourseCtxChange,
+}: CourseContextMenuProps) {
+  const { menuRef, height } = useMenuHeight<HTMLDivElement>();
+  const position = useAnchorPosition(anchorRef, true, height);
+
+  if (typeof document === 'undefined' || !anchorRef.current) {
+    return null;
+  }
+
+  const portalStyle = position
+    ? { top: position.top, left: position.left }
+    : { visibility: 'hidden', pointerEvents: 'none', top: 0, left: 0 };
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="fixed z-[9999] w-72 rounded-2xl border border-gray-800 bg-gray-950/95 p-3 shadow-2xl shadow-black/40 backdrop-blur"
+      data-placement={position?.placement ?? 'bottom'}
+      style={portalStyle}
+    >
+      <label className="text-xs uppercase tracking-wide text-gray-400">Course context</label>
+      <textarea
+        value={courseCtx}
+        onChange={(e) => onCourseCtxChange(e.target.value)}
+        placeholder="Paste rubric or course guidelines..."
+        className="mt-2 h-28 w-full resize-none rounded-xl border border-gray-800 bg-gray-900/70 p-3 text-sm text-gray-200 placeholder-gray-500 focus:border-indigo-500/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+        disabled={loading}
+      />
+    </div>,
+    document.body,
+  );
+}

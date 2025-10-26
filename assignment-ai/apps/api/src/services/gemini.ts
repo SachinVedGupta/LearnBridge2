@@ -54,7 +54,7 @@ const EDIT_RESPONSE_SCHEMA = {
     },
     summary: {
       type: SchemaType.STRING,
-      description: 'Brief summary of all changes'
+      description: 'One sentence summary of what was changed/added (e.g. "Added 5 materials to the materials section")'
     }
   },
   required: ['suggestions', 'summary'],

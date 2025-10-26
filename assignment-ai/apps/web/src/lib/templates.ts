@@ -1,9 +1,18 @@
+import type { ComponentType, SVGProps } from 'react';
+import {
+  AcademicCapIcon,
+  BeakerIcon,
+  DocumentPlusIcon,
+  PencilSquareIcon,
+  ScaleIcon,
+} from '@heroicons/react/24/outline';
+
 export interface Template {
   id: string;
   name: string;
   description: string;
   content: string;
-  icon: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
 }
 
 export const templates: Template[] = [
@@ -11,14 +20,14 @@ export const templates: Template[] = [
     id: 'blank',
     name: 'Blank Document',
     description: 'Start with an empty page',
-    icon: '📄',
+    icon: DocumentPlusIcon,
     content: '',
   },
   {
     id: 'five-paragraph',
     name: '5-Paragraph Essay',
     description: 'Classic essay structure for high school and college',
-    icon: '📝',
+    icon: PencilSquareIcon,
     content: `<h1>[Your Essay Title]</h1>
 <h2>Introduction</h2>
 <p><em>Hook:</em> Start with an interesting fact, quote, or question to grab the reader's attention.</p>
@@ -48,7 +57,7 @@ export const templates: Template[] = [
     id: 'research-paper',
     name: 'Research Paper',
     description: 'Academic research paper structure',
-    icon: '🔬',
+    icon: AcademicCapIcon,
     content: `<h1>[Research Paper Title]</h1>
 <h2>Abstract</h2>
 <p>Brief summary of your research (150-250 words): Include purpose, methods, key findings, and conclusions.</p>
@@ -87,7 +96,7 @@ export const templates: Template[] = [
     id: 'lab-report',
     name: 'Lab Report',
     description: 'Scientific lab report format',
-    icon: '🧪',
+    icon: BeakerIcon,
     content: `<h1>[Lab Report Title]</h1>
 <p><strong>Name:</strong> [Your Name]<br>
 <strong>Date:</strong> [Date of Experiment]<br>
@@ -135,7 +144,7 @@ export const templates: Template[] = [
     id: 'argumentative',
     name: 'Argumentative Essay',
     description: 'Persuasive essay with counter-arguments',
-    icon: '⚖️',
+    icon: ScaleIcon,
     content: `<h1>[Argumentative Essay Title]</h1>
 <h2>Introduction</h2>
 <p><em>Hook:</em> Start with a compelling fact, statistic, or scenario related to your topic.</p>
@@ -174,4 +183,3 @@ export const templates: Template[] = [
 export function getTemplateById(id: string): Template | undefined {
   return templates.find(t => t.id === id);
 }
-
