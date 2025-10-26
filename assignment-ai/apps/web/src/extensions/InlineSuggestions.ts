@@ -64,11 +64,14 @@ export const InlineSuggestions = Extension.create({
             // Update state if meta is set
             const meta = tr.getMeta(suggestionsPluginKey);
             if (meta) {
+              console.log('[Plugin State] Received meta with', meta.suggestions?.length, 'suggestions');
               return meta as SuggestionsState;
             }
             
             // Re-map suggestion ranges on document change
             if (!tr.docChanged) return state;
+            
+            console.log('[Plugin State] Document changed, remapping', state.suggestions.length, 'suggestions');
             
             const mapped = state.suggestions.map(s => ({
               ...s,
@@ -83,12 +86,17 @@ export const InlineSuggestions = Extension.create({
         props: {
           decorations(state) {
             const pluginState = suggestionsPluginKey.getState(state);
-            if (!pluginState) return DecorationSet.empty;
+            if (!pluginState) {
+              console.log('[Decorations] No plugin state');
+              return DecorationSet.empty;
+            }
             
             const { suggestions } = pluginState;
+            console.log('[Decorations] Processing', suggestions.length, 'suggestions');
             const decorations: Decoration[] = [];
             
             suggestions.forEach(s => {
+              console.log(`[Decorations] Suggestion ${s.id}: stale=${s.stale}, range=[${s.absoluteFrom}:${s.absoluteTo}]`);
               if (!s.stale) {
                 // Add inline highlight for the original range
                 decorations.push(
@@ -134,9 +142,12 @@ export const InlineSuggestions = Extension.create({
                     key: `suggestion-${s.id}`,
                   })
                 );
+              } else {
+                console.log(`[Decorations] Skipping stale suggestion ${s.id}`);
               }
             });
             
+            console.log('[Decorations] Created', decorations.length, 'decorations');
             return DecorationSet.create(state.doc, decorations);
           },
         },
@@ -147,8 +158,11 @@ export const InlineSuggestions = Extension.create({
   addCommands() {
     return {
       setSuggestions: (suggestions: MappedSuggestion[], selectionStart: number) => ({ tr, dispatch }) => {
+        console.log('[setSuggestions] Called with', suggestions.length, 'suggestions');
+        console.log('[setSuggestions] First suggestion:', suggestions[0]);
         if (dispatch) {
           tr.setMeta(suggestionsPluginKey, { suggestions, selectionStart });
+          console.log('[setSuggestions] Meta set on transaction');
         }
         return true;
       },
@@ -160,15 +174,25 @@ export const InlineSuggestions = Extension.create({
         const suggestion = pluginState.suggestions.find(s => s.id === id);
         if (!suggestion || suggestion.stale) return false;
         
-        // Replace text
-        tr.replaceWith(suggestion.absoluteFrom, suggestion.absoluteTo, 
-          state.schema.text(suggestion.replacement));
+        console.log('[acceptSuggestion] Applying:', {
+          id,
+          range: [suggestion.absoluteFrom, suggestion.absoluteTo],
+          original: suggestion.original,
+          replacement: suggestion.replacement
+        });
+        
+        // Replace text with normalized content
+        const textNode = state.schema.text(suggestion.replacement);
+        tr.replaceWith(suggestion.absoluteFrom, suggestion.absoluteTo, textNode);
         
         // Remove from state
         const remaining = pluginState.suggestions.filter(s => s.id !== id);
         tr.setMeta(suggestionsPluginKey, { ...pluginState, suggestions: remaining });
         
-        if (dispatch) dispatch(tr);
+        if (dispatch) {
+          dispatch(tr);
+          console.log('[acceptSuggestion] Dispatched successfully');
+        }
         return true;
       },
 
@@ -192,16 +216,36 @@ export function mapSuggestionsToAbsolute(
   selectionStart: number,
   editor: any
 ): MappedSuggestion[] {
+  console.log('[Mapping] selectionStart:', selectionStart);
+  console.log('[Mapping] Total suggestions:', suggestions.length);
+  
   return suggestions.map(s => {
     const absFrom = selectionStart + s.range.from;
     const absTo = selectionStart + s.range.to;
-    const liveText = editor.state.doc.textBetween(absFrom, absTo, ' ');
+    const liveText = editor.state.doc.textBetween(absFrom, absTo, '\n');
+    
+    // Normalize whitespace for comparison
+    const normalizedOriginal = s.original.replace(/\s+/g, ' ').trim();
+    const normalizedLive = liveText.replace(/\s+/g, ' ').trim();
+    // TEMPORARILY DISABLED - mark all as NOT stale to debug rendering
+    const isStale = false; // normalizedLive !== normalizedOriginal;
+    
+    console.log(`[Mapping] Suggestion ${s.id}:`, {
+      relativeRange: `[${s.range.from}:${s.range.to}]`,
+      absoluteRange: `[${absFrom}:${absTo}]`,
+      original: JSON.stringify(s.original),
+      liveText: JSON.stringify(liveText),
+      normalizedOriginal: JSON.stringify(normalizedOriginal),
+      normalizedLive: JSON.stringify(normalizedLive),
+      isStale,
+      replacement: s.replacement.substring(0, 50) + (s.replacement.length > 50 ? '...' : '')
+    });
     
     return {
       ...s,
       absoluteFrom: absFrom,
       absoluteTo: absTo,
-      stale: liveText !== s.original,
+      stale: isStale,
     };
   });
 }
