@@ -70,5 +70,3 @@ export default function InputArea({ onSendMessage, disabled }: InputAreaProps) {
   );
 }
 
-
-
